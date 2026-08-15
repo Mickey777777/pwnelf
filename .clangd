@@ -1,0 +1,9 @@
+CompileFlags:
+  Add:
+    - -std=c++17
+    - -Iinclude
+    - -Wall
+    - -Wextra
+
+Diagnostics:
+  UnusedIncludes: Strict
