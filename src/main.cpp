@@ -1,6 +1,8 @@
+#include <pwnelf/lookup.hpp>
 #include <pwnelf/pattern.hpp>
 #include <CLI/CLI.hpp>
 #include <iostream>
+#include <stdexcept>
 
 namespace{
     constexpr int exitOk = 0;
@@ -26,44 +28,12 @@ int main(int argc, char** argv){
     try{
         if(*cyclic_cmd){
             if(*look_opt){
-                if(lookup.rfind("0x", 0) == 0){
-                    std::string digit = lookup.substr(2);
-                    std::size_t digit_len = digit.length();
-                    if(digit_len % 2 == 1){
-                        std::cerr << "error: hex value has an odd number of digits: " << lookup << std::endl;
-                        return exitUsageError;
-                    }else if(digit_len == 0){
-                        std::cerr << "error: hex value has no digits: " << lookup << std::endl;
-                        return exitUsageError;
-                    }else if(digit.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos){
-                        std::cerr << "error: hex value has non hex character: " << lookup << std::endl;
-                        return exitUsageError;
-                    }else if(digit_len != 8 && digit_len != 16){
-                        std::cerr << "error: hex value isn't 4 or 8 bytes: " << lookup << std::endl;
-                        return exitUsageError;
-                    }
-
-                    std::size_t width = digit_len/2;
-                    std::uint64_t value = std::stoull(digit, nullptr, 16);
-                    
-                    std::optional<std::size_t> res = pwnelf::cyclic_find(value, width);
-
-                    if(res.has_value()){
-                        std::cout << *res << std::endl;
-                    }else{
-                        std::cerr << "error: cannot find pattern: " << lookup << std::endl;
-                        return exitAnalysisError;
-                    }
-
+                std::optional<std::size_t> res = pwnelf::lookupOffset(lookup);
+                if(res.has_value()){
+                    std::cout << *res << std::endl;
                 }else{
-                    std::optional<std::size_t> res = pwnelf::cyclic_find(lookup);
-
-                    if(res.has_value()){
-                        std::cout << *res << std::endl;
-                    }else{
-                        std::cerr << "error: cannot find pattern: " << lookup << std::endl;
-                        return exitAnalysisError;
-                    }
+                    std::cerr << "error: cannot find pattern: " << lookup << std::endl;
+                    return exitAnalysisError;
                 }
             }else{
                 if(!(*len_opt)){
