@@ -14,7 +14,7 @@ int main(int argc, char** argv){
     CLI::App app{"pwnelf - ELF x86-64 analysis"};
     app.require_subcommand(1);
 
-    auto* cyclic_cmd = app.add_subcommand("cyclic", "Generate or look up a deBruijn pattrern");
+    auto* cyclic_cmd = app.add_subcommand("cyclic", "Generate or look up a de Bruijn pattern");
 
     std::size_t length = 0;
     std::string lookup;
