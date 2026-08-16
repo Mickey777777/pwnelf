@@ -1,12 +1,12 @@
 #include <pwnelf/pattern.hpp>
 
-#include <iostream>
 #include <string>
 #include <cstddef>
 #include <stdexcept>
 #include <optional>
 #include <cstdint>
 #include <vector>
+#include <utility>
 
 namespace pwnelf {
 
