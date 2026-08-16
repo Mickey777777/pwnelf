@@ -19,8 +19,15 @@ add_library(pwnelf_core STATIC
 target_include_directories(pwnelf_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(pwnelf_core PRIVATE -Wall -Wextra -Wpedantic)
 
+include(FetchContent)
+FetchContent_Declare(cli11
+  GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
+  GIT_TAG v2.4.2
+)
+FetchContent_MakeAvailable(cli11)
+
 add_executable(pwnelf src/main.cpp)
-target_link_libraries(pwnelf PRIVATE pwnelf_core)
+target_link_libraries(pwnelf PRIVATE pwnelf_core CLI11::CLI11)
 target_compile_options(pwnelf PRIVATE -Wall -Wextra -Wpedantic)
 
 enable_testing()
