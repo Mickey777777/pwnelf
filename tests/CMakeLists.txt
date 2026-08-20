@@ -8,6 +8,7 @@ FetchContent_MakeAvailable(googletest)
 add_executable(pwnelf_tests
   test_pattern.cpp
   test_lookup.cpp
+  test_reader.cpp
 )
 target_link_libraries(pwnelf_tests PRIVATE pwnelf_core GTest::gtest_main)
 

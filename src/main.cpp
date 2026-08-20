@@ -2,7 +2,6 @@
 #include <pwnelf/pattern.hpp>
 #include <CLI/CLI.hpp>
 #include <iostream>
-#include <stdexcept>
 
 namespace{
     constexpr int exitOk = 0;
