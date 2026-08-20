@@ -18,6 +18,7 @@ add_library(pwnelf_core STATIC
   src/lookup.cpp
   src/reader.cpp
   src/mapped_file.cpp
+  src/elf.cpp
 )
 target_include_directories(pwnelf_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(pwnelf_core PRIVATE -Wall -Wextra -Wpedantic)
