@@ -10,6 +10,8 @@ add_executable(pwnelf_tests
   test_lookup.cpp
   test_reader.cpp
   test_mapped_file.cpp
+  test_elf.cpp
+  elf_fixture.cpp
 )
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tmp)
 target_compile_definitions(pwnelf_tests PRIVATE
