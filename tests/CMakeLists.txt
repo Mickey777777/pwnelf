@@ -9,7 +9,11 @@ add_executable(pwnelf_tests
   test_pattern.cpp
   test_lookup.cpp
   test_reader.cpp
+  test_mapped_file.cpp
 )
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tmp)
+target_compile_definitions(pwnelf_tests PRIVATE
+  PWNELF_TEST_TMPDIR="${CMAKE_CURRENT_BINARY_DIR}/tmp")
 target_link_libraries(pwnelf_tests PRIVATE pwnelf_core GTest::gtest_main)
 
 include(GoogleTest)
