@@ -1,6 +1,5 @@
 # 빌드
-build/
-build-san/
+build*/
 _deps/
 *.o
 *.a
