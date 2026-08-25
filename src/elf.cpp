@@ -184,6 +184,10 @@ namespace pwnelf{
             s.memsz = p.p_memsz;
             s.align = p.p_align;
 
+            if(s.type == PT_LOAD && s.filesz > 0){
+                reader_.slice(s.offset, s.filesz, "PT_LOAD segment contents");
+            }
+
             segment_.push_back(s);
         }
     }
