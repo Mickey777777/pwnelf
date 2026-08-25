@@ -27,6 +27,13 @@ namespace fixture{
     inline constexpr std::size_t kPhdrSize = 56;
     inline constexpr std::size_t kShdrSize = 64;
 
+    inline constexpr std::size_t kPhdrOffType   = 0;
+    inline constexpr std::size_t kPhdrOffFlags  = 4;
+    inline constexpr std::size_t kPhdrOffOffset = 8;
+    inline constexpr std::size_t kPhdrOffVaddr  = 16;
+    inline constexpr std::size_t kPhdrOffFilesz = 32;
+    inline constexpr std::size_t kPhdrOffMemsz  = 40;
+
     inline constexpr std::size_t kShdrOffName   = 0;
     inline constexpr std::size_t kShdrOffType   = 4;
     inline constexpr std::size_t kShdrOffFlags  = 8;
@@ -52,6 +59,7 @@ namespace fixture{
         std::uint32_t link{0};
         std::uint32_t info{0};
         std::uint64_t entsize{0};
+        std::uint64_t size{0};
     };
 
     struct SegmentSpec{
@@ -62,6 +70,7 @@ namespace fixture{
         std::uint64_t filesz{0};
         std::uint64_t memsz{0};
         std::uint64_t align{0x1000};
+        std::uint64_t paddr{0};
     };
 
     class ElfBuilder{

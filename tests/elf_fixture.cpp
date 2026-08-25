@@ -76,7 +76,7 @@ namespace fixture{
             append_u32(out, p.flags);
             append_u64(out, p.offset);
             append_u64(out, p.vaddr);
-            append_u64(out, p.vaddr);
+            append_u64(out, p.paddr ? p.paddr : p.vaddr);
             append_u64(out, p.filesz);
             append_u64(out, p.memsz ? p.memsz : p.filesz);
             append_u64(out, p.align);
@@ -94,6 +94,7 @@ namespace fixture{
         out.insert(out.end(), shstrtab.begin(), shstrtab.end());
 
         for(const SegmentSpec& p : segments_){
+            if(p.filesz == 0) continue;
             const std::size_t end = static_cast<std::size_t>(p.offset + p.filesz);
             if(out.size() < end) out.resize(end, 0);
         }
@@ -109,7 +110,7 @@ namespace fixture{
             append_u64(out, s.flags);
             append_u64(out, s.addr);
             append_u64(out, data_offsets[i]);
-            append_u64(out, s.data.size());
+            append_u64(out, s.size ? s.size : s.data.size());
             append_u32(out, s.link);
             append_u32(out, s.info);
             append_u64(out, 1);
