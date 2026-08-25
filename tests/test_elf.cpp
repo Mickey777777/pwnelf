@@ -6,6 +6,8 @@
 #include "elf_fixture.hpp"
 
 #include <cstdint>
+#include <cstring>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -230,3 +232,210 @@ TEST(ElfFileLoad, ReportsNonElfFileAsParseError){
     const std::string path = fixture::writeTempFile("not_an_elf.bin", junk);
     EXPECT_THROW(pwnelf::ElfFile::load(path), pwnelf::ParseError);
 }
+
+namespace{
+    std::size_t shdrOffset(const std::vector<std::uint8_t>& buf, std::size_t index){
+        std::uint64_t shoff = 0;
+        std::memcpy(&shoff, buf.data() + fixture::kEhdrOffShoff, sizeof(shoff));
+        return static_cast<std::size_t>(shoff) + index * fixture::kShdrSize;
+    }
+}
+
+TEST(ElfSections, ParsesNamesAndData){
+    fixture::ElfBuilder b;
+    b.add_section({".text", 1, 0x6, 0x401000, {0x90, 0xc3}, 0, 0, 0});
+    b.add_section({".data", 1, 0x3, 0x404000, {0xde, 0xad}, 0, 0, 0});
+    const std::vector<std::uint8_t> buf = b.build();
+    const pwnelf::ElfFile elf = parse(buf);
+
+    ASSERT_EQ(elf.sections().size(), 4u);
+    EXPECT_EQ(elf.sections()[0].name, "");
+    EXPECT_EQ(elf.sections()[1].name, ".text");
+    EXPECT_EQ(elf.sections()[2].name, ".data");
+    EXPECT_EQ(elf.sections()[3].name, ".shstrtab");
+
+    const pwnelf::Section* text = elf.find_section(".text");
+    ASSERT_NE(text, nullptr);
+    EXPECT_EQ(text->index, 1u);
+    EXPECT_EQ(text->addr, 0x401000u);
+    EXPECT_EQ(text->size, 2u);
+    EXPECT_EQ(text->flags, 0x6u);
+
+    const pwnelf::ByteView d = elf.section_data(*text);
+    ASSERT_EQ(d.size(), 2u);
+    EXPECT_EQ(d[0], 0x90);
+    EXPECT_EQ(d[1], 0xc3);
+}
+
+TEST(ElfSections, ReturnsNullptrForMissingSection){
+    fixture::ElfBuilder b;
+    b.add_section({".text", 1, 0x6, 0x401000, {0xc3}, 0, 0, 0});
+    const std::vector<std::uint8_t> buf = b.build();
+    EXPECT_EQ(parse(buf).find_section(".nonexistent"), nullptr);
+}
+
+TEST(ElfSections, TreatsNobitsAsEmptyWithoutRangeCheck){
+    fixture::ElfBuilder b;
+    b.add_section({".bss", 8, 0x3, 0x405000, {}, 0, 0, 0});
+    const std::vector<std::uint8_t> buf = b.build();
+    const pwnelf::ElfFile elf = parse(buf);
+    const pwnelf::Section* bss = elf.find_section(".bss");
+    ASSERT_NE(bss, nullptr);
+    EXPECT_EQ(bss->type, 8u);
+    EXPECT_TRUE(elf.section_data(*bss).empty());
+}
+
+TEST(ElfSegments, ParsesProgramHeaders){
+    fixture::ElfBuilder b;
+    b.add_segment({1, 5, 0x1000, 0x401000, 0x200, 0x200, 0x1000});
+    b.add_segment({1, 6, 0x2000, 0x404000, 0x100, 0x180, 0x1000});
+    b.add_segment({0x6474e551, 6, 0, 0, 0, 0, 0x10});
+    const std::vector<std::uint8_t> buf = b.build();
+    const pwnelf::ElfFile elf = parse(buf);
+
+    ASSERT_EQ(elf.segments().size(), 3u);
+    EXPECT_EQ(elf.segments()[0].type, 1u);
+    EXPECT_EQ(elf.segments()[0].flags, 5u);
+    EXPECT_EQ(elf.segments()[0].offset, 0x1000u);
+    EXPECT_EQ(elf.segments()[0].vaddr, 0x401000u);
+    EXPECT_EQ(elf.segments()[0].filesz, 0x200u);
+    EXPECT_EQ(elf.segments()[1].memsz, 0x180u);
+    EXPECT_EQ(elf.segments()[2].type, 0x6474e551u);
+}
+
+TEST(ElfSegments, SelectsExecutableLoadSegments){
+    fixture::ElfBuilder b;
+    b.add_segment({1, 5, 0x1000, 0x401000, 0x200, 0x200, 0x1000});
+    b.add_segment({1, 6, 0x2000, 0x404000, 0x100, 0x100, 0x1000});
+    b.add_segment({0x6474e551, 7, 0, 0, 0, 0, 0x10});
+    const std::vector<std::uint8_t> buf = b.build();
+    const pwnelf::ElfFile elf = parse(buf);
+
+    const std::vector<const pwnelf::Segment*> exec = elf.executable_segments();
+    ASSERT_EQ(exec.size(), 1u);
+    EXPECT_EQ(exec[0]->vaddr, 0x401000u);
+}
+
+TEST(ElfAddress, TranslatesVaddrToFileOffset){
+    fixture::ElfBuilder b;
+    b.add_segment({1, 5, 0x1000, 0x401000, 0x200, 0x200, 0x1000});
+    const std::vector<std::uint8_t> buf = b.build();
+    const pwnelf::ElfFile elf = parse(buf);
+
+    ASSERT_TRUE(elf.vaddr_to_offset(0x401000).has_value());
+    EXPECT_EQ(elf.vaddr_to_offset(0x401000).value(), 0x1000u);
+    EXPECT_EQ(elf.vaddr_to_offset(0x401080).value(), 0x1080u);
+    EXPECT_EQ(elf.vaddr_to_offset(0x4011ff).value(), 0x11ffu);
+    EXPECT_FALSE(elf.vaddr_to_offset(0x401200).has_value());
+    EXPECT_FALSE(elf.vaddr_to_offset(0x300000).has_value());
+    EXPECT_FALSE(elf.vaddr_to_offset(0).has_value());
+}
+
+TEST(ElfAddress, IgnoresNonLoadSegmentsWhenTranslating){
+    fixture::ElfBuilder b;
+    b.add_segment({0x6474e551, 7, 0x1000, 0x401000, 0x200, 0x200, 0x10});
+    const std::vector<std::uint8_t> buf = b.build();
+    const pwnelf::ElfFile elf = parse(buf);
+    EXPECT_FALSE(elf.vaddr_to_offset(0x401000).has_value());
+}
+
+TEST(ElfSections, RejectsSectionDataPastEndOfFile){
+    fixture::ElfBuilder b;
+    b.add_section({".text", 1, 0x6, 0x401000, {0xc3}, 0, 0, 0});
+    std::vector<std::uint8_t> buf = b.build();
+    fixture::patch<std::uint64_t>(buf, shdrOffset(buf, 1) + fixture::kShdrOffSize, 0xffffffff);
+    EXPECT_THROW(parse(buf), pwnelf::ParseError);
+}
+
+TEST(ElfSections, RejectsSectionNameOffsetOutsideStringTable){
+    fixture::ElfBuilder b;
+    b.add_section({".text", 1, 0x6, 0x401000, {0xc3}, 0, 0, 0});
+    std::vector<std::uint8_t> buf = b.build();
+    fixture::patch<std::uint32_t>(buf, shdrOffset(buf, 1) + fixture::kShdrOffName, 0xffff);
+    EXPECT_THROW(parse(buf), pwnelf::ParseError);
+}
+
+TEST(ElfSections, RejectsSectionNamePastEndOfStringTable){
+    fixture::ElfBuilder b;
+    b.add_section({".text", 1, 0x6, 0x401000, {0xc3}, 0, 0, 0});
+    std::vector<std::uint8_t> buf = b.build();
+    fixture::patch<std::uint32_t>(buf, shdrOffset(buf, 1) + fixture::kShdrOffName, 30);
+    EXPECT_THROW(parse(buf), pwnelf::ParseError);
+}
+
+TEST(ElfSegments, KeepsVaddrAndPaddrSeparate){
+    fixture::ElfBuilder b;
+    b.add_segment({1, 5, 0x1000, 0x401000, 0x200, 0x200, 0x1000, 0x800000});
+    const std::vector<std::uint8_t> buf = b.build();
+    const pwnelf::ElfFile elf = parse(buf);
+
+    ASSERT_EQ(elf.segments().size(), 1u);
+    EXPECT_EQ(elf.segments()[0].vaddr, 0x401000u);
+    EXPECT_EQ(elf.segments()[0].paddr, 0x800000u);
+    ASSERT_TRUE(elf.vaddr_to_offset(0x401000).has_value());
+    EXPECT_EQ(elf.vaddr_to_offset(0x401000).value(), 0x1000u);
+}
+
+TEST(ElfAddress, StopsAtFileszNotMemsz){
+    fixture::ElfBuilder b;
+    b.add_segment({1, 6, 0x1000, 0x404000, 0x100, 0x400, 0x1000, 0});
+    const std::vector<std::uint8_t> buf = b.build();
+    const pwnelf::ElfFile elf = parse(buf);
+
+    ASSERT_EQ(elf.segments()[0].filesz, 0x100u);
+    ASSERT_EQ(elf.segments()[0].memsz, 0x400u);
+    ASSERT_TRUE(elf.vaddr_to_offset(0x4040ff).has_value());
+    EXPECT_EQ(elf.vaddr_to_offset(0x4040ff).value(), 0x10ffu);
+    EXPECT_FALSE(elf.vaddr_to_offset(0x404100).has_value());
+    EXPECT_FALSE(elf.vaddr_to_offset(0x4043ff).has_value());
+}
+
+TEST(ElfAddress, DoesNotWrapForSegmentNearAddressSpaceEnd){
+    fixture::ElfBuilder b;
+    b.add_segment({1, 5, 0x100, 0xffffffffffffff00ULL, 0x200, 0x200, 0x1000, 0});
+    const std::vector<std::uint8_t> buf = b.build();
+    const pwnelf::ElfFile elf = parse(buf);
+
+    ASSERT_TRUE(elf.vaddr_to_offset(0xffffffffffffff00ULL).has_value());
+    EXPECT_EQ(elf.vaddr_to_offset(0xffffffffffffff00ULL).value(), 0x100u);
+    EXPECT_FALSE(elf.vaddr_to_offset(0).has_value());
+    EXPECT_FALSE(elf.vaddr_to_offset(0x100).has_value());
+}
+
+TEST(ElfSections, NobitsWithNonZeroSizeHasEmptyData){
+    fixture::ElfBuilder b;
+    b.add_section({".bss", 8, 0x3, 0x405000, {}, 0, 0, 0, 0x1000});
+    const std::vector<std::uint8_t> buf = b.build();
+    const pwnelf::ElfFile elf = parse(buf);
+
+    const pwnelf::Section* bss = elf.find_section(".bss");
+    ASSERT_NE(bss, nullptr);
+    EXPECT_EQ(bss->type, 8u);
+    EXPECT_EQ(bss->size, 0x1000u);
+    EXPECT_TRUE(elf.section_data(*bss).empty());
+}
+
+TEST(ElfSegments, RejectsLoadSegmentContentsPastEndOfFile){
+    fixture::ElfBuilder b;
+    b.add_segment({1, 5, 0x100, 0x401000, 0x200, 0x200, 0x1000, 0});
+    std::vector<std::uint8_t> buf = b.build();
+
+    std::uint64_t phoff = 0;
+    std::memcpy(&phoff, buf.data() + fixture::kEhdrOffPhoff, sizeof(phoff));
+    fixture::patch<std::uint64_t>(buf, static_cast<std::size_t>(phoff) + fixture::kPhdrOffOffset,
+                                  0x900000);
+    EXPECT_THROW(parse(buf), pwnelf::ParseError);
+}
+
+TEST(ElfSegments, AcceptsLoadSegmentWithoutFileContents){
+    fixture::ElfBuilder b;
+    b.add_segment({1, 6, 0x900000, 0x404000, 0, 0x1000, 0x1000, 0});
+    const std::vector<std::uint8_t> buf = b.build();
+
+    EXPECT_NO_THROW(parse(buf));
+    const pwnelf::ElfFile elf = parse(buf);
+    ASSERT_EQ(elf.segments().size(), 1u);
+    EXPECT_EQ(elf.segments()[0].filesz, 0u);
+    EXPECT_EQ(elf.segments()[0].memsz, 0x1000u);
+}
+

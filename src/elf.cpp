@@ -4,11 +4,15 @@
 #include <pwnelf/elf_type.hpp>
 #include <pwnelf/hexfmt.hpp>
 #include <pwnelf/error.hpp>
+#include <pwnelf/reader.hpp>
 
 #include <string>
 #include <memory>
 #include <sstream>
 #include <cstdint>
+#include <vector>
+#include <cstddef>
+#include <optional>
 
 namespace{
     bool isTableInFile(std::uint64_t offset, std::uint64_t count, std::uint64_t entsize, std::uint64_t fileSize){
@@ -23,12 +27,17 @@ namespace pwnelf{
     ElfFile::ElfFile(std::unique_ptr<MappedFile> owned, ByteView data, std::string origin)
     : owned_(std::move(owned)), data_(data), reader_(data), origin_(std::move(origin)){
         parse_header();
+        parse_segments();
+        parse_sections();
     }
 
     const ElfHeader& ElfFile::header() const noexcept {return header_;}
     const std::string& ElfFile::origin() const noexcept {return origin_;}
     const Reader& ElfFile::reader() const noexcept {return reader_;}
     ByteView ElfFile::data() const noexcept {return data_;}
+
+    const std::vector<Section>& ElfFile::sections() const noexcept {return sections_;}
+    const std::vector<Segment>& ElfFile::segments() const noexcept {return segment_;}
 
     const char* machine_name(Elf64_Half machine){
         switch (machine) {
@@ -157,5 +166,127 @@ namespace pwnelf{
         header_.shentsize = eh.e_shentsize;
         header_.shnum = eh.e_shnum;
         header_.shstrndx = eh.e_shstrndx;
+    }
+
+    void ElfFile::parse_segments(){
+        segment_.reserve(header_.phnum);
+
+        for(size_t i=0; i<header_.phnum; ++i){
+            std::uint64_t offset = static_cast<std::uint64_t>(i) * kPhdrSize + header_.phoff;
+            Segment s;
+            Elf64_Phdr p = reader_.read<Elf64_Phdr>(offset, "program header");
+            s.type = p.p_type;
+            s.flags = p.p_flags;
+            s.offset = p.p_offset;
+            s.vaddr = p.p_vaddr;
+            s.paddr = p.p_paddr;
+            s.filesz = p.p_filesz;
+            s.memsz = p.p_memsz;
+            s.align = p.p_align;
+
+            if(s.type == PT_LOAD && s.filesz > 0){
+                reader_.slice(s.offset, s.filesz, "PT_LOAD segment contents");
+            }
+
+            segment_.push_back(s);
+        }
+    }
+
+    void ElfFile::parse_sections(){
+        if(header_.shnum == 0){
+            return;
+        }
+
+        const std::uint64_t strtab_hdr_off = header_.shoff + static_cast<std::uint64_t>(header_.shstrndx) * kShdrSize;
+        const Elf64_Shdr strtab_sh = reader_.read<Elf64_Shdr>(strtab_hdr_off, "section name string table header");
+
+        if(strtab_sh.sh_type == SHT_NOBITS){
+            std::ostringstream oss;
+            oss << origin_ << ": section name string table is SHT_NOBITS and has no contents";
+            throw ParseError(oss.str());
+        }
+
+        reader_.slice(strtab_sh.sh_offset, strtab_sh.sh_size, "section name string table");
+
+        const std::uint64_t strtab_off = strtab_sh.sh_offset;
+        const std::uint64_t strtab_size = strtab_sh.sh_size;
+
+        for(size_t i=0; i<header_.shnum; ++i){
+            std::uint64_t offset = static_cast<std::uint64_t>(i) * kShdrSize + header_.shoff;
+            Section sh;
+            Elf64_Shdr p = reader_.read<Elf64_Shdr>(offset, "section header");
+            if(p.sh_name != 0){
+                if(p.sh_name >= strtab_size){
+                    std::ostringstream oss;
+                    oss << origin_ << ": section " << i << " name offset " << p.sh_name
+                        << " is outside the string table (size " << strtab_size << ")";
+                    throw ParseError(oss.str());
+                }
+                sh.name = reader_.cstr(strtab_off + p.sh_name, strtab_size - p.sh_name, "section name");
+            }
+            sh.type = p.sh_type;
+            sh.flags = p.sh_flags;
+            sh.addr = p.sh_addr;
+            sh.offset = p.sh_offset;
+            sh.size = p.sh_size;
+            sh.link = p.sh_link;
+            sh.info = p.sh_info;
+            sh.addralign = p.sh_addralign;
+            sh.entsize = p.sh_entsize;
+            sh.index = static_cast<std::uint16_t>(i);
+
+            if(sh.type != SHT_NOBITS && sh.size != 0){
+                reader_.slice(sh.offset, sh.size, "section contents");
+            }
+
+            sections_.push_back(std::move(sh));
+        }
+    }
+
+    const Section* ElfFile::find_section(std::string_view name) const noexcept{
+        for(size_t i=0; i<sections_.size(); ++i){
+            if(sections_[i].name == name){
+                return &sections_[i];
+            }
+        }
+        return nullptr;
+    }
+
+    ByteView ElfFile::section_data(const Section& s) const {
+        if(s.type == SHT_NOBITS || s.size == 0){
+            return ByteView();
+        }
+
+        return reader_.slice(s.offset, s.size, "section contents");
+    }
+
+    std::optional<std::uint64_t> ElfFile::vaddr_to_offset(std::uint64_t vaddr) const noexcept{
+        for(const Segment& s : segment_){
+            if(s.type != PT_LOAD){
+                continue;
+            }
+            if(vaddr < s.vaddr){
+                continue;
+            }
+
+            const std::uint64_t d = vaddr - s.vaddr;
+            if(d < s.filesz){
+                return s.offset + d;
+            }
+        }
+
+        return std::nullopt;
+    }
+
+    std::vector<const Segment*> ElfFile::executable_segments() const {
+        std::vector<const Segment*> ret;
+
+        for(const Segment& s : segment_){
+            if(s.type == PT_LOAD && (s.flags & PF_X) != 0){
+                ret.push_back(&s);
+            }
+        }
+
+        return ret;
     }
 }

@@ -38,6 +38,46 @@ namespace pwnelf {
     static_assert(offsetof(Elf64_Ehdr, e_shnum) == 60, "");
     static_assert(offsetof(Elf64_Ehdr, e_shstrndx) == 62, "");
 
+    struct Elf64_Phdr{
+        Elf64_Word p_type; // 세그먼트 종류 (PT_LOAD 등)
+        Elf64_Word p_flags; // 권한 (PF_R/PF_W/PF_X)
+        Elf64_Off p_offset; // 파일 오프셋
+        Elf64_Addr p_vaddr; // 가상 주소
+        Elf64_Addr p_paddr; // 물리 주소 (거의 vaddr 와 같음)
+        Elf64_Xword p_filesz; // 파일에서 차지하는 크기
+        Elf64_Xword p_memsz; // 메모리에서 차지하는 크기 (.bss 때문에 filesz 보다 클 수 있음)
+        Elf64_Xword p_align; // 정렬
+    };
+
+    static_assert(sizeof(Elf64_Phdr) == 56, "Elf64_Phdr must be 56 bytes");
+    static_assert(offsetof(Elf64_Phdr, p_flags) == 4, "");
+    static_assert(offsetof(Elf64_Phdr, p_offset) == 8, "");
+    static_assert(offsetof(Elf64_Phdr, p_vaddr) == 16, "");
+    static_assert(offsetof(Elf64_Phdr, p_filesz) == 32, "");
+    static_assert(offsetof(Elf64_Phdr, p_memsz) == 40, "");
+
+    struct Elf64_Shdr{
+        Elf64_Word sh_name; // .shstrtab 안에서의 이름 오프셋
+        Elf64_Word sh_type; // 섹션 종류 (SHT_PROGBITS 등)
+        Elf64_Xword sh_flags; // 속성 (SHF_ALLOC/SHF_EXECINSTR 등)
+        Elf64_Addr sh_addr; // 로드됐을 때의 가상 주소
+        Elf64_Off sh_offset; // 파일 오프셋 (SHT_NOBITS 면 무의미)
+        Elf64_Xword sh_size; // 크기
+        Elf64_Word sh_link; // 다른 섹션 인덱스 (용도는 sh_type 에 따라 다름)
+        Elf64_Word sh_info; // 부가 정보 (용도는 sh_type 에 따라 다름)
+        Elf64_Xword sh_addralign; // 정렬
+        Elf64_Xword sh_entsize; // 고정 크기 항목 테이블일 때 항목 하나의 크기
+    };
+
+    static_assert(sizeof(Elf64_Shdr) == 64, "Elf64_Shdr must be 64 bytes");
+    static_assert(offsetof(Elf64_Shdr, sh_type) == 4, "");
+    static_assert(offsetof(Elf64_Shdr, sh_flags) == 8, "");
+    static_assert(offsetof(Elf64_Shdr, sh_addr) == 16, "");
+    static_assert(offsetof(Elf64_Shdr, sh_offset) == 24, "");
+    static_assert(offsetof(Elf64_Shdr, sh_size) == 32, "");
+    static_assert(offsetof(Elf64_Shdr, sh_link) == 40, "");
+    static_assert(offsetof(Elf64_Shdr, sh_entsize) == 56, "");
+
     // e_ident inner 인덱스
     inline constexpr std::size_t EI_MAG0 = 0;
     inline constexpr std::size_t EI_MAG1 = 1;
@@ -83,6 +123,42 @@ namespace pwnelf {
     inline constexpr Elf64_Half kEhdrSize = 64;
     inline constexpr Elf64_Half kPhdrSize = 56;
     inline constexpr Elf64_Half kShdrSize = 64;
+
+    // p_type — 세그먼트 종류
+    inline constexpr Elf64_Word PT_NULL = 0;
+    inline constexpr Elf64_Word PT_LOAD = 1;
+    inline constexpr Elf64_Word PT_DYNAMIC = 2;
+    inline constexpr Elf64_Word PT_INTERP = 3;
+    inline constexpr Elf64_Word PT_NOTE = 4;
+    inline constexpr Elf64_Word PT_PHDR = 6;
+    inline constexpr Elf64_Word PT_TLS = 7;
+    inline constexpr Elf64_Word PT_GNU_EH_FRAME = 0x6474e550;
+    inline constexpr Elf64_Word PT_GNU_STACK = 0x6474e551;
+    inline constexpr Elf64_Word PT_GNU_RELRO = 0x6474e552;
+
+    // p_flags — 세그먼트 권한
+    inline constexpr Elf64_Word PF_X = 1;
+    inline constexpr Elf64_Word PF_W = 2;
+    inline constexpr Elf64_Word PF_R = 4;
+
+    // sh_type — 섹션 종류
+    inline constexpr Elf64_Word SHT_NULL = 0;
+    inline constexpr Elf64_Word SHT_PROGBITS = 1;
+    inline constexpr Elf64_Word SHT_SYMTAB = 2;
+    inline constexpr Elf64_Word SHT_STRTAB = 3;
+    inline constexpr Elf64_Word SHT_RELA = 4;
+    inline constexpr Elf64_Word SHT_DYNAMIC = 6;
+    inline constexpr Elf64_Word SHT_NOTE = 7;
+    inline constexpr Elf64_Word SHT_NOBITS = 8;
+    inline constexpr Elf64_Word SHT_DYNSYM = 11;
+
+    // sh_flags — 섹션 속성
+    inline constexpr Elf64_Xword SHF_WRITE = 0x1;
+    inline constexpr Elf64_Xword SHF_ALLOC = 0x2;
+    inline constexpr Elf64_Xword SHF_EXECINSTR = 0x4;
+
+    // 특수 섹션 인덱스
+    inline constexpr Elf64_Half SHN_UNDEF = 0;
 
     const char* machine_name(Elf64_Half machine);
 }
