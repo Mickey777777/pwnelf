@@ -6,7 +6,6 @@
 #include <pwnelf/error.hpp>
 #include <pwnelf/reader.hpp>
 
-#include <iostream>
 #include <string>
 #include <memory>
 #include <sstream>
