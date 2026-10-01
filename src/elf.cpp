@@ -6,6 +6,7 @@
 #include <pwnelf/error.hpp>
 #include <pwnelf/reader.hpp>
 
+#include <iostream>
 #include <string>
 #include <memory>
 #include <sstream>
@@ -31,6 +32,8 @@ namespace pwnelf{
         parse_segments();
         parse_sections();
         parse_symbols();
+        parse_dynamic();
+        parse_relocations();
     }
 
     const ElfHeader& ElfFile::header() const noexcept {return header_;}
@@ -42,6 +45,8 @@ namespace pwnelf{
     const std::vector<Segment>& ElfFile::segments() const noexcept {return segment_;}
     const std::vector<Symbol>& ElfFile::symbols() const noexcept {return symbols_;}
     bool ElfFile::has_symtab() const noexcept {return has_symtab_;}
+    const std::vector<DynamicEntry>& ElfFile::dynamic() const noexcept {return dynamic_;}
+    const std::vector<Relocation>& ElfFile::plt_relocations() const noexcept {return relocations_;}
 
     const char* machine_name(Elf64_Half machine){
         switch (machine) {
@@ -307,6 +312,108 @@ namespace pwnelf{
         }
     }
 
+    void ElfFile::parse_dynamic(){
+        const Section* dyn = nullptr;
+        
+        for(const Section& sec : sections_){
+            if(sec.type == SHT_DYNAMIC){
+                dyn = &sec;
+                break;
+            }
+        }
+
+        if(dyn == nullptr) return;
+
+        if(dyn->entsize != sizeof(Elf64_Dyn)){
+            std::ostringstream oss;
+            oss << origin_ << ": dynamic section \"" << dyn->name << "\" has sh_entsize " << dyn->entsize
+                << ", expected " << sizeof(Elf64_Dyn);
+            throw ParseError(oss.str());
+        }
+
+        dynamic_link_ = dyn->link;
+
+        std::uint64_t count = dyn->size / dyn->entsize;
+        for(std::uint64_t i=0; i<count; ++i){
+            Elf64_Dyn raw = reader_.read<Elf64_Dyn>(dyn->offset + i *dyn->entsize, "dynamic entry");
+            if(raw.d_tag == DT_NULL) break;
+
+            dynamic_.push_back({raw.d_tag, raw.d_val});
+        }
+    }
+
+    void ElfFile::parse_relocations(){
+        const Section* rela = find_section(".rela.plt");
+        if(rela == nullptr) return;
+
+        if(rela->entsize != sizeof(Elf64_Rela)){
+            std::ostringstream oss;
+            oss << origin_ << ": relocation section \"" << rela->name << "\" has sh_entsize " << rela->entsize
+                << ", expected " << sizeof(Elf64_Rela);
+            throw ParseError(oss.str());
+        }
+
+        const Section* symsec = nullptr;
+        if(rela->link != 0){
+            if(rela->link >= sections_.size()){
+                std::ostringstream oss;
+                oss << origin_ << ": relocation section \"" << rela->name << "\" links to section " << rela->link
+                    << " but the file has " << sections_.size() << " sections";
+                throw ParseError(oss.str());
+            }
+
+            symsec = &sections_[rela->link];
+            if(symsec->type != SHT_SYMTAB && symsec->type != SHT_DYNSYM){
+                std::ostringstream oss;
+                oss << origin_ << ": relocation section \"" << rela->name << "\" links to \"" << symsec->name
+                    << "\" which is not a symbol table";
+                throw ParseError(oss.str());
+            }
+        }
+
+        std::vector<const Symbol*> linked;
+
+        if(symsec != nullptr){
+            SymbolSource want;
+            if(symsec->type == SHT_SYMTAB){
+                want = SymbolSource::Symtab;
+            }else{
+                want = SymbolSource::Dynsym;
+            }
+
+            for(const Symbol& s : symbols_){
+                if(s.source == want){
+                    linked.push_back(&s);
+                }
+            }
+        }
+
+        std::uint64_t count = rela->size / rela->entsize;
+
+        for(uint64_t i=0; i<count; ++i){
+            Elf64_Rela raw = reader_.read<Elf64_Rela>(rela->offset + i *rela->entsize, "relocation entry");
+
+            Relocation rel;
+            rel.offset = raw.r_offset;
+            rel.type = raw.r_info & 0xffffffff;
+            rel.sym_index = raw.r_info >> 32;
+            rel.addend = raw.r_addend;
+
+            if(rel.sym_index != 0){
+                if(rel.sym_index >= linked.size()){
+                    std::ostringstream oss;
+                    oss << origin_ << ": relocation " << i << " in \"" << rela->name << "\" references symbol "
+                        << rel.sym_index << " but the linked table has " << linked.size() << " symbols";
+                    throw ParseError(oss.str());
+                }
+
+                rel.symbol_name = linked[rel.sym_index]->name;
+            }
+
+            relocations_.push_back(std::move(rel));
+        }
+    }
+
     const Section* ElfFile::find_section(std::string_view name) const noexcept{
         for(size_t i=0; i<sections_.size(); ++i){
             if(sections_[i].name == name){
@@ -406,5 +513,66 @@ namespace pwnelf{
         }
 
         return nullptr;
+    }
+
+    bool ElfFile::has_dynamic_tag(std::int64_t tag) const noexcept {
+        for(const DynamicEntry& de : dynamic_){
+            if(tag == de.tag){
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    std::optional<std::uint64_t> ElfFile::dynamic_value(std::int64_t tag) const noexcept {
+        for(const DynamicEntry& de : dynamic_){
+            if(de.tag == tag){
+                return de.value;
+            }
+        }
+
+        return std::nullopt;
+    }
+
+    std::optional<std::string> ElfFile::dynamic_string(std::int64_t tag) const {
+        const std::optional<std::uint64_t> off = dynamic_value(tag);
+        if(!off){
+            return std::nullopt;
+        }
+
+        if(dynamic_link_ >= sections_.size()){
+            std::ostringstream oss;
+            oss << origin_ << ": dynamic section links to section " << dynamic_link_
+                << " but the file has " << sections_.size() << " sections";
+            throw ParseError(oss.str());
+        }
+
+        const Section& strsec = sections_[dynamic_link_];
+        if(strsec.type != SHT_STRTAB){
+            std::ostringstream oss;
+            oss << origin_ << ": dynamic section links to \"" << strsec.name
+                << "\" which is not a string table";
+            throw ParseError(oss.str());
+        }
+
+        if(*off >= strsec.size){
+            std::ostringstream oss;
+            oss << origin_ << ": dynamic string offset " << *off << " is outside \"" << strsec.name
+                << "\" (size " << strsec.size << ")";
+            throw ParseError(oss.str());
+        }
+
+        return reader_.cstr(strsec.offset + *off, strsec.size - *off, "dynamic string");
+    }
+
+    std::optional<std::string> ElfFile::got_symbol(std::uint64_t got_addr) const noexcept {
+        for(const Relocation& r : relocations_){
+            if(r.offset == got_addr && !r.symbol_name.empty()){
+                return r.symbol_name;
+            }
+        }
+
+        return std::nullopt;
     }
 }

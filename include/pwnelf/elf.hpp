@@ -75,6 +75,20 @@ namespace pwnelf{
         bool is_defined() const noexcept;
     };
 
+
+    struct DynamicEntry {
+        std::int64_t tag{0};
+        std::uint64_t value{0};
+    };
+
+    struct Relocation {
+        std::uint64_t offset{0};
+        std::uint32_t type{0};
+        std::uint32_t sym_index{0};
+        std::int64_t addend{0};
+        std::string symbol_name;
+    };
+
     class ElfFile{
         private:
         std::unique_ptr<MappedFile> owned_;
@@ -85,6 +99,10 @@ namespace pwnelf{
         std::vector<Section> sections_;
         std::vector<Segment> segment_;
         std::vector<Symbol> symbols_;
+        std::vector<DynamicEntry> dynamic_;
+        std::vector<Relocation> relocations_;
+        
+        std::uint32_t dynamic_link_{0};
         bool has_symtab_{false};
 
         ElfFile(std::unique_ptr<MappedFile> owned, ByteView data, std::string origin);
@@ -92,6 +110,8 @@ namespace pwnelf{
         void parse_segments();
         void parse_sections();
         void parse_symbols();
+        void parse_dynamic();
+        void parse_relocations();
 
         public:
         static ElfFile load(const std::string& path);
@@ -114,5 +134,12 @@ namespace pwnelf{
         bool has_symbol(std::string_view name) const noexcept;
         const Symbol* function_at(std::uint64_t addr) const noexcept;
         const Symbol* find_function(std::string_view name) const noexcept;
+
+        const std::vector<DynamicEntry>& dynamic() const noexcept;
+        bool has_dynamic_tag(std::int64_t tag) const noexcept;
+        std::optional<std::uint64_t> dynamic_value(std::int64_t tag) const noexcept;
+        std::optional<std::string> dynamic_string(std::int64_t tag) const;
+        const std::vector<Relocation>& plt_relocations() const noexcept;
+        std::optional<std::string> got_symbol(std::uint64_t got_addr) const noexcept;
     };
 }

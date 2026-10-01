@@ -9,6 +9,7 @@ namespace pwnelf {
     using Elf64_Half = std::uint16_t;
     using Elf64_Word = std::uint32_t;
     using Elf64_Xword = std::uint64_t;
+    using Elf64_Sxword = std::int64_t;
 
     struct Elf64_Ehdr{
         unsigned char e_ident[16]; // 매직바이트, 클래스, 엔디안, 버전
@@ -93,6 +94,24 @@ namespace pwnelf {
     static_assert(offsetof(Elf64_Sym, st_shndx) == 6, "");
     static_assert(offsetof(Elf64_Sym, st_value) == 8, "");
     static_assert(offsetof(Elf64_Sym, st_size) == 16, "");
+
+    struct Elf64_Dyn{
+        Elf64_Sxword d_tag;
+        Elf64_Xword d_val;
+    };
+
+    struct Elf64_Rela{
+        Elf64_Addr r_offset;
+        Elf64_Xword r_info;
+        Elf64_Sxword r_addend;
+    };
+
+    static_assert(sizeof(Elf64_Dyn) == 16, "Elf64_Dyn must be 16 bytes");
+    static_assert(offsetof(Elf64_Dyn, d_val) == 8, "");
+
+    static_assert(sizeof(Elf64_Rela) == 24, "Elf64_Rela must be 24 bytes");
+    static_assert(offsetof(Elf64_Rela, r_info) == 8, "");
+    static_assert(offsetof(Elf64_Rela, r_addend) == 16, "");
 
     // e_ident inner 인덱스
     inline constexpr std::size_t EI_MAG0 = 0;
@@ -185,6 +204,29 @@ namespace pwnelf {
     inline constexpr unsigned char STB_LOCAL = 0;
     inline constexpr unsigned char STB_GLOBAL = 1;
     inline constexpr unsigned char STB_WEAK = 2;
+
+    // d_tag — 동적 엔트리 종류
+    inline constexpr Elf64_Sxword DT_NULL = 0;
+    inline constexpr Elf64_Sxword DT_NEEDED = 1;
+    inline constexpr Elf64_Sxword DT_STRTAB = 5;
+    inline constexpr Elf64_Sxword DT_STRSZ = 10;
+    inline constexpr Elf64_Sxword DT_RPATH = 15;
+    inline constexpr Elf64_Sxword DT_BIND_NOW = 24;
+    inline constexpr Elf64_Sxword DT_RUNPATH = 29;
+    inline constexpr Elf64_Sxword DT_FLAGS = 30;
+    inline constexpr Elf64_Sxword DT_FLAGS_1 = 0x6ffffffb;
+
+    // DT_FLAGS 값의 비트
+    inline constexpr Elf64_Xword DF_BIND_NOW = 0x8;
+
+    // DT_FLAGS_1 값의 비트
+    inline constexpr Elf64_Xword DF_1_NOW = 0x1;
+    inline constexpr Elf64_Xword DF_1_PIE = 0x08000000;
+
+    // r_info 하위 32비트 — relocation 종류
+    inline constexpr Elf64_Word R_X86_64_GLOB_DAT = 6;
+    inline constexpr Elf64_Word R_X86_64_JUMP_SLOT = 7;
+    inline constexpr Elf64_Word R_X86_64_IRELATIVE = 37;
 
     const char* machine_name(Elf64_Half machine);
 }
