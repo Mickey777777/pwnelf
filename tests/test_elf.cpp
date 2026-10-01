@@ -1,4 +1,5 @@
 #include <pwnelf/elf.hpp>
+#include <pwnelf/elf_type.hpp>
 #include <pwnelf/error.hpp>
 
 #include <gtest/gtest.h>
@@ -439,3 +440,188 @@ TEST(ElfSegments, AcceptsLoadSegmentWithoutFileContents){
     EXPECT_EQ(elf.segments()[0].memsz, 0x1000u);
 }
 
+namespace{
+    constexpr unsigned char kGlobalFunc = 0x12;
+    constexpr unsigned char kGlobalObject = 0x11;
+    constexpr std::size_t kSymtabIndex = 2;
+
+    std::vector<std::uint8_t> elfWithSymtab(const std::vector<fixture::SymSpec>& syms,
+                                            std::uint32_t symtab_type = 2,
+                                            const char* symtab_name = ".symtab",
+                                            const char* strtab_name = ".strtab"){
+        auto [symdata, strdata] = fixture::build_symtab(syms);
+        fixture::ElfBuilder b;
+        b.add_section({".text", 1, 0x6, 0x401000, {0x90, 0xc3}, 0, 0, 0});
+        b.add_section({symtab_name, symtab_type, 0, 0, symdata, 3, 1, fixture::kSymSize});
+        b.add_section({strtab_name, 3, 0, 0, strdata, 0, 0, 0});
+        return b.build();
+    }
+
+    const pwnelf::Symbol* findSymbol(const pwnelf::ElfFile& elf, const std::string& name){
+        for(const pwnelf::Symbol& s : elf.symbols()){
+            if(s.name == name) return &s;
+        }
+        return nullptr;
+    }
+}
+
+TEST(ElfSymbols, ParsesSymtabEntries){
+    const std::vector<std::uint8_t> buf = elfWithSymtab({
+        {"main", 0x401000, 0x20, kGlobalFunc, 1},
+        {"gvar", 0x404000, 0x08, kGlobalObject, 1},
+    });
+    const pwnelf::ElfFile elf = parse(buf);
+
+    EXPECT_TRUE(elf.has_symtab());
+    ASSERT_EQ(elf.symbols().size(), 3u);
+    EXPECT_EQ(elf.symbols()[0].name, "");
+
+    const pwnelf::Symbol* main_sym = elf.find_function("main");
+    ASSERT_NE(main_sym, nullptr);
+    EXPECT_EQ(main_sym->value, 0x401000u);
+    EXPECT_EQ(main_sym->size, 0x20u);
+    EXPECT_EQ(main_sym->shndx, 1u);
+    EXPECT_EQ(main_sym->type(), pwnelf::STT_FUNC);
+    EXPECT_EQ(main_sym->bind(), pwnelf::STB_GLOBAL);
+    EXPECT_EQ(main_sym->source, pwnelf::SymbolSource::Symtab);
+    EXPECT_TRUE(main_sym->is_defined());
+    EXPECT_TRUE(main_sym->is_function());
+}
+
+TEST(ElfSymbols, DoesNotTreatObjectSymbolAsFunction){
+    const std::vector<std::uint8_t> buf = elfWithSymtab({{"gvar", 0x404000, 8, kGlobalObject, 1}});
+    const pwnelf::ElfFile elf = parse(buf);
+
+    EXPECT_TRUE(elf.has_symbol("gvar"));
+    EXPECT_EQ(elf.find_function("gvar"), nullptr);
+    ASSERT_NE(findSymbol(elf, "gvar"), nullptr);
+    EXPECT_EQ(findSymbol(elf, "gvar")->type(), pwnelf::STT_OBJECT);
+}
+
+TEST(ElfSymbols, DoesNotTreatUndefinedSymbolAsFunction){
+    const std::vector<std::uint8_t> buf = elfWithSymtab({{"printf", 0, 0x10, kGlobalFunc, 0}});
+    const pwnelf::ElfFile elf = parse(buf);
+
+    EXPECT_TRUE(elf.has_symbol("printf"));
+    ASSERT_NE(findSymbol(elf, "printf"), nullptr);
+    EXPECT_FALSE(findSymbol(elf, "printf")->is_defined());
+    EXPECT_EQ(elf.find_function("printf"), nullptr);
+}
+
+TEST(ElfSymbols, DoesNotTreatZeroSizeFunctionAsFunction){
+    const std::vector<std::uint8_t> buf = elfWithSymtab({{"_start", 0x401000, 0, kGlobalFunc, 1}});
+    const pwnelf::ElfFile elf = parse(buf);
+
+    EXPECT_TRUE(elf.has_symbol("_start"));
+    EXPECT_EQ(elf.find_function("_start"), nullptr);
+    EXPECT_EQ(elf.function_at(0x401000), nullptr);
+}
+
+TEST(ElfSymbols, FindsFunctionContainingAddress){
+    const std::vector<std::uint8_t> buf = elfWithSymtab({
+        {"first", 0x401000, 0x20, kGlobalFunc, 1},
+        {"second", 0x401020, 0x10, kGlobalFunc, 1},
+    });
+    const pwnelf::ElfFile elf = parse(buf);
+
+    ASSERT_NE(elf.function_at(0x401000), nullptr);
+    EXPECT_EQ(elf.function_at(0x401000)->name, "first");
+    ASSERT_NE(elf.function_at(0x40101f), nullptr);
+    EXPECT_EQ(elf.function_at(0x40101f)->name, "first");
+    ASSERT_NE(elf.function_at(0x401020), nullptr);
+    EXPECT_EQ(elf.function_at(0x401020)->name, "second");
+    ASSERT_NE(elf.function_at(0x40102f), nullptr);
+    EXPECT_EQ(elf.function_at(0x40102f)->name, "second");
+    EXPECT_EQ(elf.function_at(0x401030), nullptr);
+    EXPECT_EQ(elf.function_at(0x400fff), nullptr);
+}
+
+TEST(ElfSymbols, DoesNotWrapForFunctionNearAddressSpaceEnd){
+    const std::vector<std::uint8_t> buf = elfWithSymtab({
+        {"edge", 0xfffffffffffffff0ULL, 0x20, kGlobalFunc, 1},
+    });
+    const pwnelf::ElfFile elf = parse(buf);
+
+    ASSERT_NE(elf.function_at(0xfffffffffffffff8ULL), nullptr);
+    EXPECT_EQ(elf.function_at(0xfffffffffffffff8ULL)->name, "edge");
+    EXPECT_EQ(elf.function_at(0), nullptr);
+    EXPECT_EQ(elf.function_at(0x8), nullptr);
+}
+
+TEST(ElfSymbols, ReportsStrippedWhenOnlyDynsymExists){
+    const std::vector<std::uint8_t> buf =
+        elfWithSymtab({{"printf", 0, 0, kGlobalFunc, 0}}, 11, ".dynsym", ".dynstr");
+    const pwnelf::ElfFile elf = parse(buf);
+
+    EXPECT_FALSE(elf.has_symtab());
+    EXPECT_TRUE(elf.has_symbol("printf"));
+    ASSERT_NE(findSymbol(elf, "printf"), nullptr);
+    EXPECT_EQ(findSymbol(elf, "printf")->source, pwnelf::SymbolSource::Dynsym);
+}
+
+TEST(ElfSymbols, MergesSymtabAndDynsym){
+    auto [symdata, strdata] = fixture::build_symtab({{"main", 0x401000, 0x20, kGlobalFunc, 1}});
+    auto [dyndata, dynstr] = fixture::build_symtab({{"puts", 0, 0, kGlobalFunc, 0}});
+    fixture::ElfBuilder b;
+    b.add_section({".text", 1, 0x6, 0x401000, {0x90, 0xc3}, 0, 0, 0});
+    b.add_section({".symtab", 2, 0, 0, symdata, 3, 1, fixture::kSymSize});
+    b.add_section({".strtab", 3, 0, 0, strdata, 0, 0, 0});
+    b.add_section({".dynsym", 11, 0x2, 0, dyndata, 5, 1, fixture::kSymSize});
+    b.add_section({".dynstr", 3, 0x2, 0, dynstr, 0, 0, 0});
+    const std::vector<std::uint8_t> buf = b.build();
+    const pwnelf::ElfFile elf = parse(buf);
+
+    EXPECT_TRUE(elf.has_symtab());
+    EXPECT_EQ(elf.symbols().size(), 4u);
+    ASSERT_NE(findSymbol(elf, "main"), nullptr);
+    EXPECT_EQ(findSymbol(elf, "main")->source, pwnelf::SymbolSource::Symtab);
+    ASSERT_NE(findSymbol(elf, "puts"), nullptr);
+    EXPECT_EQ(findSymbol(elf, "puts")->source, pwnelf::SymbolSource::Dynsym);
+}
+
+TEST(ElfSymbols, HandlesBinaryWithNoSymbolTables){
+    fixture::ElfBuilder b;
+    b.add_section({".text", 1, 0x6, 0x401000, {0xc3}, 0, 0, 0});
+    const std::vector<std::uint8_t> buf = b.build();
+    const pwnelf::ElfFile elf = parse(buf);
+
+    EXPECT_FALSE(elf.has_symtab());
+    EXPECT_TRUE(elf.symbols().empty());
+    EXPECT_FALSE(elf.has_symbol("main"));
+    EXPECT_EQ(elf.find_function("main"), nullptr);
+    EXPECT_EQ(elf.function_at(0x401000), nullptr);
+}
+
+TEST(ElfSymbols, RejectsSymtabWithInvalidStringTableLink){
+    std::vector<std::uint8_t> buf = elfWithSymtab({{"main", 0x401000, 0x20, kGlobalFunc, 1}});
+    fixture::patch<std::uint32_t>(buf, shdrOffset(buf, kSymtabIndex) + fixture::kShdrOffLink, 99);
+    EXPECT_THROW(parse(buf), pwnelf::ParseError);
+}
+
+TEST(ElfSymbols, RejectsSymtabLinkedToNonStringTable){
+    std::vector<std::uint8_t> buf = elfWithSymtab({{"main", 0x401000, 0x20, kGlobalFunc, 1}});
+    fixture::patch<std::uint32_t>(buf, shdrOffset(buf, kSymtabIndex) + fixture::kShdrOffLink, 1);
+    EXPECT_THROW(parse(buf), pwnelf::ParseError);
+}
+
+TEST(ElfSymbols, RejectsSymtabWithZeroEntsize){
+    std::vector<std::uint8_t> buf = elfWithSymtab({{"main", 0x401000, 0x20, kGlobalFunc, 1}});
+    fixture::patch<std::uint64_t>(buf, shdrOffset(buf, kSymtabIndex) + fixture::kShdrOffEntsize, 0);
+    EXPECT_THROW(parse(buf), pwnelf::ParseError);
+}
+
+TEST(ElfSymbols, RejectsSymtabWithWrongEntsize){
+    std::vector<std::uint8_t> buf = elfWithSymtab({{"main", 0x401000, 0x20, kGlobalFunc, 1}});
+    fixture::patch<std::uint64_t>(buf, shdrOffset(buf, kSymtabIndex) + fixture::kShdrOffEntsize, 32);
+    EXPECT_THROW(parse(buf), pwnelf::ParseError);
+}
+
+TEST(ElfSymbols, RejectsSymbolNameOutsideStringTable){
+    std::vector<std::uint8_t> buf = elfWithSymtab({{"main", 0x401000, 0x20, kGlobalFunc, 1}});
+    std::uint64_t symtab_off = 0;
+    std::memcpy(&symtab_off, buf.data() + shdrOffset(buf, kSymtabIndex) + fixture::kShdrOffOffset,
+                sizeof(symtab_off));
+    fixture::patch<std::uint32_t>(buf, static_cast<std::size_t>(symtab_off) + fixture::kSymSize
+                                       + fixture::kSymOffName, 0xffff);
+    EXPECT_THROW(parse(buf), pwnelf::ParseError);
+}

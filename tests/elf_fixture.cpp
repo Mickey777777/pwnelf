@@ -4,6 +4,10 @@
 #include <utility>
 
 namespace{
+    void append_u16(std::vector<std::uint8_t>& v, std::uint16_t x){
+        for(int i = 0; i < 2; ++i) v.push_back(static_cast<std::uint8_t>((x >> (8 * i)) & 0xff));
+    }
+
     void append_u32(std::vector<std::uint8_t>& v, std::uint32_t x){
         for(int i = 0; i < 4; ++i) v.push_back(static_cast<std::uint8_t>((x >> (8 * i)) & 0xff));
     }
@@ -142,5 +146,24 @@ namespace fixture{
         std::memcpy(out.data(), ehdr.data(), kEhdrSize);
 
         return out;
+    }
+
+    std::pair<std::vector<std::uint8_t>, std::vector<std::uint8_t>>
+    build_symtab(const std::vector<SymSpec>& syms){
+        std::vector<std::uint8_t> strtab{0};
+        std::vector<std::uint8_t> symtab(kSymSize, 0);
+        for(const SymSpec& s : syms){
+            const std::uint32_t name_off = static_cast<std::uint32_t>(strtab.size());
+            strtab.insert(strtab.end(), s.name.begin(), s.name.end());
+            strtab.push_back(0);
+
+            append_u32(symtab, name_off);
+            symtab.push_back(s.info);
+            symtab.push_back(0);
+            append_u16(symtab, s.shndx);
+            append_u64(symtab, s.value);
+            append_u64(symtab, s.size);
+        }
+        return {symtab, strtab};
     }
 }

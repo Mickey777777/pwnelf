@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fixture{
@@ -40,6 +41,11 @@ namespace fixture{
     inline constexpr std::size_t kShdrOffAddr   = 16;
     inline constexpr std::size_t kShdrOffOffset = 24;
     inline constexpr std::size_t kShdrOffSize   = 32;
+    inline constexpr std::size_t kShdrOffLink   = 40;
+    inline constexpr std::size_t kShdrOffEntsize = 56;
+
+    inline constexpr std::size_t kSymSize      = 24;
+    inline constexpr std::size_t kSymOffName   = 0;
 
     std::vector<std::uint8_t> elf64_header_only();
 
@@ -87,4 +93,15 @@ namespace fixture{
         ElfBuilder& add_segment(SegmentSpec spec);
         std::vector<std::uint8_t> build() const;
     };
+
+    struct SymSpec{
+        std::string name;
+        std::uint64_t value{0};
+        std::uint64_t size{0};
+        unsigned char info{0};
+        std::uint16_t shndx{0};
+    };
+
+    std::pair<std::vector<std::uint8_t>, std::vector<std::uint8_t>>
+    build_symtab(const std::vector<SymSpec>& syms);
 }
