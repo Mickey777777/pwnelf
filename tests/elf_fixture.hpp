@@ -47,6 +47,9 @@ namespace fixture{
     inline constexpr std::size_t kSymSize      = 24;
     inline constexpr std::size_t kSymOffName   = 0;
 
+    inline constexpr std::size_t kDynSize      = 16;
+    inline constexpr std::size_t kRelaSize     = 24;
+
     std::vector<std::uint8_t> elf64_header_only();
 
     std::string writeTempFile(const std::string& name, const std::vector<std::uint8_t>& bytes);
@@ -104,4 +107,19 @@ namespace fixture{
 
     std::pair<std::vector<std::uint8_t>, std::vector<std::uint8_t>>
     build_symtab(const std::vector<SymSpec>& syms);
+
+    struct DynSpec{
+        std::int64_t tag{0};
+        std::uint64_t value{0};
+    };
+
+    struct RelaSpec{
+        std::uint64_t offset{0};
+        std::uint32_t type{0};
+        std::uint32_t sym_index{0};
+        std::int64_t addend{0};
+    };
+
+    std::vector<std::uint8_t> build_dynamic(const std::vector<DynSpec>& entries);
+    std::vector<std::uint8_t> build_rela(const std::vector<RelaSpec>& entries);
 }

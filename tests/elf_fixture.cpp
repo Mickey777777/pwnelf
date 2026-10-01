@@ -166,4 +166,25 @@ namespace fixture{
         }
         return {symtab, strtab};
     }
+
+    std::vector<std::uint8_t> build_dynamic(const std::vector<DynSpec>& entries){
+        std::vector<std::uint8_t> out;
+        for(const DynSpec& e : entries){
+            append_u64(out, static_cast<std::uint64_t>(e.tag));
+            append_u64(out, e.value);
+        }
+        append_u64(out, 0);
+        append_u64(out, 0);
+        return out;
+    }
+
+    std::vector<std::uint8_t> build_rela(const std::vector<RelaSpec>& entries){
+        std::vector<std::uint8_t> out;
+        for(const RelaSpec& e : entries){
+            append_u64(out, e.offset);
+            append_u64(out, (static_cast<std::uint64_t>(e.sym_index) << 32) | e.type);
+            append_u64(out, static_cast<std::uint64_t>(e.addend));
+        }
+        return out;
+    }
 }

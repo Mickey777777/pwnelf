@@ -625,3 +625,228 @@ TEST(ElfSymbols, RejectsSymbolNameOutsideStringTable){
                                        + fixture::kSymOffName, 0xffff);
     EXPECT_THROW(parse(buf), pwnelf::ParseError);
 }
+
+namespace{
+    constexpr std::uint32_t kDynamicIndex = 2;
+    constexpr std::uint32_t kDynstrIndex = 1;
+    constexpr std::uint32_t kDynsymIndex = 2;
+
+    std::vector<std::uint8_t> elfWithDynamic(const std::vector<fixture::DynSpec>& entries,
+                                             const std::vector<std::uint8_t>& dynstr,
+                                             std::uint32_t dynamic_link = kDynstrIndex){
+        fixture::ElfBuilder b;
+        b.add_segment({1, 4, 0, 0x400000, 0x4000, 0x4000, 0x1000, 0});
+        b.add_section({".dynstr", 3, 0x2, 0x402000, dynstr, 0, 0, 0});
+        b.add_section({".dynamic", 6, 0x3, 0x403e00, fixture::build_dynamic(entries),
+                       dynamic_link, 0, fixture::kDynSize});
+        return b.build();
+    }
+
+    std::vector<std::uint8_t> dynstrWith(const std::string& str, std::uint64_t& offset){
+        std::vector<std::uint8_t> dynstr{0};
+        offset = dynstr.size();
+        dynstr.insert(dynstr.end(), str.begin(), str.end());
+        dynstr.push_back(0);
+        return dynstr;
+    }
+
+    std::vector<std::uint8_t> elfWithRelaPlt(const std::vector<fixture::RelaSpec>& relas,
+                                             std::uint32_t rela_link = kDynsymIndex,
+                                             std::uint64_t rela_entsize = fixture::kRelaSize){
+        auto [symdata, strdata] = fixture::build_symtab({
+            {"printf", 0, 0, kGlobalFunc, 0},
+            {"puts", 0, 0, kGlobalFunc, 0},
+        });
+        fixture::ElfBuilder b;
+        b.add_section({".text", 1, 0x6, 0x401000, {0xc3}, 0, 0, 0});
+        b.add_section({".dynsym", 11, 0x2, 0, symdata, 3, 1, fixture::kSymSize});
+        b.add_section({".dynstr", 3, 0x2, 0, strdata, 0, 0, 0});
+        b.add_section({".rela.plt", 4, 0x42, 0, fixture::build_rela(relas),
+                       rela_link, 0, rela_entsize});
+        return b.build();
+    }
+}
+
+TEST(ElfDynamic, ParsesEntriesAndStopsAtDtNull){
+    const std::vector<std::uint8_t> buf = elfWithDynamic({
+        {pwnelf::DT_BIND_NOW, 0},
+        {pwnelf::DT_FLAGS_1, pwnelf::DF_1_PIE},
+        {pwnelf::DT_NULL, 0},
+        {pwnelf::DT_RPATH, 1},
+    }, {0});
+    const pwnelf::ElfFile elf = parse(buf);
+
+    ASSERT_EQ(elf.dynamic().size(), 2u);
+    EXPECT_EQ(elf.dynamic()[0].tag, pwnelf::DT_BIND_NOW);
+    EXPECT_EQ(elf.dynamic()[1].tag, pwnelf::DT_FLAGS_1);
+    EXPECT_EQ(elf.dynamic()[1].value, pwnelf::DF_1_PIE);
+    EXPECT_TRUE(elf.has_dynamic_tag(pwnelf::DT_BIND_NOW));
+    EXPECT_EQ(elf.dynamic_value(pwnelf::DT_FLAGS_1), std::optional<std::uint64_t>{pwnelf::DF_1_PIE});
+    EXPECT_FALSE(elf.has_dynamic_tag(pwnelf::DT_RPATH));
+    EXPECT_FALSE(elf.dynamic_value(pwnelf::DT_RPATH).has_value());
+}
+
+TEST(ElfDynamic, HandlesBinaryWithNoDynamicSection){
+    fixture::ElfBuilder b;
+    b.add_section({".text", 1, 0x6, 0x401000, {0xc3}, 0, 0, 0});
+    const std::vector<std::uint8_t> buf = b.build();
+    const pwnelf::ElfFile elf = parse(buf);
+
+    EXPECT_TRUE(elf.dynamic().empty());
+    EXPECT_FALSE(elf.has_dynamic_tag(pwnelf::DT_BIND_NOW));
+    EXPECT_FALSE(elf.dynamic_value(pwnelf::DT_FLAGS_1).has_value());
+    EXPECT_FALSE(elf.dynamic_string(pwnelf::DT_RUNPATH).has_value());
+}
+
+TEST(ElfDynamic, ReadsStringFromLinkedStringTable){
+    std::uint64_t runpath_off = 0;
+    const std::vector<std::uint8_t> dynstr = dynstrWith("/opt/lib", runpath_off);
+    const std::vector<std::uint8_t> buf = elfWithDynamic({
+        {pwnelf::DT_STRTAB, 0x402000},
+        {pwnelf::DT_STRSZ, dynstr.size()},
+        {pwnelf::DT_RUNPATH, runpath_off},
+    }, dynstr);
+    const pwnelf::ElfFile elf = parse(buf);
+
+    EXPECT_EQ(elf.dynamic_string(pwnelf::DT_RUNPATH), std::optional<std::string>{"/opt/lib"});
+    EXPECT_FALSE(elf.dynamic_string(pwnelf::DT_RPATH).has_value());
+}
+
+TEST(ElfDynamic, RejectsDynamicWithZeroEntsize){
+    std::vector<std::uint8_t> buf = elfWithDynamic({{pwnelf::DT_BIND_NOW, 0}}, {0});
+    fixture::patch<std::uint64_t>(buf, shdrOffset(buf, kDynamicIndex) + fixture::kShdrOffEntsize, 0);
+    EXPECT_THROW(parse(buf), pwnelf::ParseError);
+}
+
+TEST(ElfDynamic, RejectsDynamicWithWrongEntsize){
+    std::vector<std::uint8_t> buf = elfWithDynamic({{pwnelf::DT_BIND_NOW, 0}}, {0});
+    fixture::patch<std::uint64_t>(buf, shdrOffset(buf, kDynamicIndex) + fixture::kShdrOffEntsize, 32);
+    EXPECT_THROW(parse(buf), pwnelf::ParseError);
+}
+
+TEST(ElfDynamic, RejectsStringOffsetOutsideStringTable){
+    const std::vector<std::uint8_t> buf = elfWithDynamic({{pwnelf::DT_RUNPATH, 0x100}}, {0});
+    const pwnelf::ElfFile elf = parse(buf);
+    EXPECT_THROW(elf.dynamic_string(pwnelf::DT_RUNPATH), pwnelf::ParseError);
+}
+
+TEST(ElfDynamic, RejectsStringLookupWhenLinkIsNotStringTable){
+    std::uint64_t runpath_off = 0;
+    const std::vector<std::uint8_t> dynstr = dynstrWith("/opt/lib", runpath_off);
+    const std::vector<std::uint8_t> buf =
+        elfWithDynamic({{pwnelf::DT_RUNPATH, runpath_off}}, dynstr, kDynamicIndex);
+    const pwnelf::ElfFile elf = parse(buf);
+    EXPECT_THROW(elf.dynamic_string(pwnelf::DT_RUNPATH), pwnelf::ParseError);
+}
+
+TEST(ElfRelocations, ParsesPltRelocationsWithSymbolNames){
+    const std::vector<std::uint8_t> buf = elfWithRelaPlt({
+        {0x404018, pwnelf::R_X86_64_JUMP_SLOT, 1, 0},
+        {0x404020, pwnelf::R_X86_64_JUMP_SLOT, 2, 0},
+    });
+    const pwnelf::ElfFile elf = parse(buf);
+
+    ASSERT_EQ(elf.plt_relocations().size(), 2u);
+    EXPECT_EQ(elf.plt_relocations()[0].offset, 0x404018u);
+    EXPECT_EQ(elf.plt_relocations()[0].type, pwnelf::R_X86_64_JUMP_SLOT);
+    EXPECT_EQ(elf.plt_relocations()[0].sym_index, 1u);
+    EXPECT_EQ(elf.plt_relocations()[0].symbol_name, "printf");
+    EXPECT_EQ(elf.plt_relocations()[1].sym_index, 2u);
+    EXPECT_EQ(elf.plt_relocations()[1].symbol_name, "puts");
+
+    EXPECT_EQ(elf.got_symbol(0x404018), std::optional<std::string>{"printf"});
+    EXPECT_EQ(elf.got_symbol(0x404020), std::optional<std::string>{"puts"});
+    EXPECT_FALSE(elf.got_symbol(0x404028).has_value());
+}
+
+TEST(ElfRelocations, ResolvesSymbolIndexThroughLinkedTable){
+    auto [symdata, strdata] = fixture::build_symtab({
+        {"local_a", 0x401000, 0x10, kGlobalFunc, 1},
+        {"local_b", 0x401010, 0x10, kGlobalFunc, 1},
+    });
+    auto [dyndata, dynstr] = fixture::build_symtab({
+        {"printf", 0, 0, kGlobalFunc, 0},
+        {"puts", 0, 0, kGlobalFunc, 0},
+    });
+    fixture::ElfBuilder b;
+    b.add_section({".text", 1, 0x6, 0x401000, {0xc3}, 0, 0, 0});
+    b.add_section({".symtab", 2, 0, 0, symdata, 3, 1, fixture::kSymSize});
+    b.add_section({".strtab", 3, 0, 0, strdata, 0, 0, 0});
+    b.add_section({".dynsym", 11, 0x2, 0, dyndata, 5, 1, fixture::kSymSize});
+    b.add_section({".dynstr", 3, 0x2, 0, dynstr, 0, 0, 0});
+    b.add_section({".rela.plt", 4, 0x42, 0,
+                   fixture::build_rela({{0x404018, pwnelf::R_X86_64_JUMP_SLOT, 2, 0}}),
+                   4, 0, fixture::kRelaSize});
+    const std::vector<std::uint8_t> buf = b.build();
+    const pwnelf::ElfFile elf = parse(buf);
+
+    ASSERT_EQ(elf.plt_relocations().size(), 1u);
+    EXPECT_EQ(elf.plt_relocations()[0].symbol_name, "puts");
+    EXPECT_EQ(elf.got_symbol(0x404018), std::optional<std::string>{"puts"});
+}
+
+TEST(ElfRelocations, LeavesNameEmptyForSymbolIndexZero){
+    const std::vector<std::uint8_t> buf = elfWithRelaPlt({
+        {0x404018, pwnelf::R_X86_64_IRELATIVE, 0, 0x401100},
+    });
+    const pwnelf::ElfFile elf = parse(buf);
+
+    ASSERT_EQ(elf.plt_relocations().size(), 1u);
+    EXPECT_EQ(elf.plt_relocations()[0].type, pwnelf::R_X86_64_IRELATIVE);
+    EXPECT_EQ(elf.plt_relocations()[0].sym_index, 0u);
+    EXPECT_EQ(elf.plt_relocations()[0].addend, 0x401100);
+    EXPECT_EQ(elf.plt_relocations()[0].symbol_name, "");
+    EXPECT_FALSE(elf.got_symbol(0x404018).has_value());
+}
+
+TEST(ElfRelocations, AcceptsRelaWithoutLinkedSymbolTable){
+    const std::vector<std::uint8_t> buf = elfWithRelaPlt({
+        {0x404018, pwnelf::R_X86_64_IRELATIVE, 0, 0x401100},
+    }, 0);
+    const pwnelf::ElfFile elf = parse(buf);
+
+    ASSERT_EQ(elf.plt_relocations().size(), 1u);
+    EXPECT_EQ(elf.plt_relocations()[0].symbol_name, "");
+}
+
+TEST(ElfRelocations, HandlesBinaryWithNoRelaPlt){
+    fixture::ElfBuilder b;
+    b.add_section({".text", 1, 0x6, 0x401000, {0xc3}, 0, 0, 0});
+    const std::vector<std::uint8_t> buf = b.build();
+    const pwnelf::ElfFile elf = parse(buf);
+
+    EXPECT_TRUE(elf.plt_relocations().empty());
+    EXPECT_FALSE(elf.got_symbol(0x404018).has_value());
+}
+
+TEST(ElfRelocations, RejectsRelaWithZeroEntsize){
+    const std::vector<std::uint8_t> buf =
+        elfWithRelaPlt({{0x404018, pwnelf::R_X86_64_JUMP_SLOT, 1, 0}}, kDynsymIndex, 0);
+    EXPECT_THROW(parse(buf), pwnelf::ParseError);
+}
+
+TEST(ElfRelocations, RejectsRelaWithWrongEntsize){
+    const std::vector<std::uint8_t> buf =
+        elfWithRelaPlt({{0x404018, pwnelf::R_X86_64_JUMP_SLOT, 0, 0}}, kDynsymIndex, 16);
+    EXPECT_THROW(parse(buf), pwnelf::ParseError);
+}
+
+TEST(ElfRelocations, RejectsRelaWithSymbolIndexOutOfRange){
+    const std::vector<std::uint8_t> buf = elfWithRelaPlt({{0x404018, pwnelf::R_X86_64_JUMP_SLOT, 99, 0}});
+    EXPECT_THROW(parse(buf), pwnelf::ParseError);
+}
+
+TEST(ElfRelocations, RejectsRelaWithLinkOutOfRange){
+    const std::vector<std::uint8_t> buf = elfWithRelaPlt({{0x404018, pwnelf::R_X86_64_JUMP_SLOT, 1, 0}}, 99);
+    EXPECT_THROW(parse(buf), pwnelf::ParseError);
+}
+
+TEST(ElfRelocations, RejectsRelaLinkedToNonSymbolTable){
+    const std::vector<std::uint8_t> buf = elfWithRelaPlt({{0x404018, pwnelf::R_X86_64_JUMP_SLOT, 1, 0}}, 1);
+    EXPECT_THROW(parse(buf), pwnelf::ParseError);
+}
+
+TEST(ElfRelocations, RejectsSymbolIndexWithoutLinkedSymbolTable){
+    const std::vector<std::uint8_t> buf = elfWithRelaPlt({{0x404018, pwnelf::R_X86_64_JUMP_SLOT, 1, 0}}, 0);
+    EXPECT_THROW(parse(buf), pwnelf::ParseError);
+}
