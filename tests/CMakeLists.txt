@@ -11,6 +11,7 @@ add_executable(pwnelf_tests
   test_reader.cpp
   test_mapped_file.cpp
   test_elf.cpp
+  test_malformed.cpp
   elf_fixture.cpp
 )
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tmp)
@@ -54,3 +55,10 @@ set_tests_properties(cli_mutually_exclusive PROPERTIES WILL_FAIL TRUE)
 
 add_test(NAME cli_error_goes_to_stderr_only
          COMMAND sh -c "test -z \"$($<TARGET_FILE:pwnelf> cyclic --lookup ZZZZ 2>/dev/null)\"")
+
+if(APPLE)
+  add_test(NAME malformed_guard_malloc
+           COMMAND $<TARGET_FILE:pwnelf_tests> --gtest_filter=Malformed.*)
+  set_tests_properties(malformed_guard_malloc PROPERTIES
+    ENVIRONMENT "DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib")
+endif()
