@@ -10,6 +10,7 @@
 #include <memory>
 #include <sstream>
 #include <cstdint>
+#include <string_view>
 #include <vector>
 #include <cstddef>
 #include <optional>
@@ -29,6 +30,7 @@ namespace pwnelf{
         parse_header();
         parse_segments();
         parse_sections();
+        parse_symbols();
     }
 
     const ElfHeader& ElfFile::header() const noexcept {return header_;}
@@ -38,6 +40,8 @@ namespace pwnelf{
 
     const std::vector<Section>& ElfFile::sections() const noexcept {return sections_;}
     const std::vector<Segment>& ElfFile::segments() const noexcept {return segment_;}
+    const std::vector<Symbol>& ElfFile::symbols() const noexcept {return symbols_;}
+    bool ElfFile::has_symtab() const noexcept {return has_symtab_;}
 
     const char* machine_name(Elf64_Half machine){
         switch (machine) {
@@ -243,6 +247,66 @@ namespace pwnelf{
         }
     }
 
+    void ElfFile::parse_symbols(){
+        for(Section sec : sections_){
+            SymbolSource source;
+            if(sec.type == SHT_SYMTAB){
+                source = SymbolSource::Symtab;
+                has_symtab_ = true;
+            }else if(sec.type == SHT_DYNSYM){
+                source = SymbolSource::Dynsym;
+            }else{
+                continue;
+            }
+
+            if(sec.entsize != sizeof(Elf64_Sym)){
+                std::ostringstream oss;
+                oss << origin_ << ": symbol table \"" << sec.name << "\" has sh_entsize " << sec.entsize
+                    << ", expected " << sizeof(Elf64_Sym);
+                throw ParseError(oss.str());
+            }
+
+            if(sec.link >= sections_.size()){
+                std::ostringstream oss;
+                oss << origin_ << ": symbol table \"" << sec.name << "\" links to section " << sec.link
+                    << " but the file has " << sections_.size() << " sections";
+                throw ParseError(oss.str());
+            }
+
+            if(sections_[sec.link].type != SHT_STRTAB){
+                std::ostringstream oss;
+                oss << origin_ << ": symbol table \"" << sec.name << "\" links to \"" << sections_[sec.link].name
+                    << "\" which is not a string table";
+                throw ParseError(oss.str());
+            }
+
+            const Section& strsec = sections_[sec.link];
+            uint64_t count = sec.size / sec.entsize;
+            for(uint64_t i=0; i<count; ++i){
+                Elf64_Sym raw = reader_.read<Elf64_Sym>(sec.offset + i *sec.entsize, "symbol table entry");
+                
+                Symbol s;
+                s.value = raw.st_value;
+                s.size = raw.st_size;
+                s.info = raw.st_info;
+                s.other = raw.st_other;
+                s.shndx = raw.st_shndx;
+                s.source = source;
+
+                if(raw.st_name >= strsec.size){
+                    std::ostringstream oss;
+                    oss << origin_ << ": symbol " << i << " in \"" << sec.name << "\" has name offset " << raw.st_name
+                        << " outside \"" << strsec.name << "\" (size " << strsec.size << ")";
+                    throw ParseError(oss.str());
+                }
+
+                s.name = reader_.cstr(strsec.offset + raw.st_name, strsec.size - raw.st_name, "symbol name");
+
+                symbols_.push_back(std::move(s));
+            }
+        }
+    }
+
     const Section* ElfFile::find_section(std::string_view name) const noexcept{
         for(size_t i=0; i<sections_.size(); ++i){
             if(sections_[i].name == name){
@@ -251,6 +315,8 @@ namespace pwnelf{
         }
         return nullptr;
     }
+
+
 
     ByteView ElfFile::section_data(const Section& s) const {
         if(s.type == SHT_NOBITS || s.size == 0){
@@ -288,5 +354,57 @@ namespace pwnelf{
         }
 
         return ret;
+    }
+
+    unsigned char Symbol::type() const noexcept {
+        return info & 0x0f;
+    }
+
+    unsigned char Symbol::bind() const noexcept {
+        return info >> 4;
+    }
+
+    bool Symbol::is_defined() const noexcept {
+        if(shndx==SHN_UNDEF) return false;
+        return true;
+    }
+
+    bool Symbol::is_function() const noexcept {
+        if(type() == STT_FUNC && is_defined() && size > 0) return true;
+        return false;
+    }
+
+    bool ElfFile::has_symbol(std::string_view name) const noexcept {
+        for(const Symbol& s : symbols_){
+            if(s.name == name) return true;
+        }
+
+        return false;
+    }
+
+    const Symbol* ElfFile::find_function(std::string_view name) const noexcept {
+        for(const Symbol& s : symbols_){
+            if(s.is_function() && s.name == name) return &s;
+        }
+
+        return nullptr;
+    }
+
+    const Symbol* ElfFile::function_at(std::uint64_t addr) const noexcept {
+        for(const Symbol& s : symbols_){
+            if(!s.is_function()){
+                continue;
+            }
+            if(addr < s.value){
+                continue;
+            }
+
+            const std::uint64_t d = addr - s.value;
+            if(d < s.size){
+                return &s;
+            }
+        }
+
+        return nullptr;
     }
 }
