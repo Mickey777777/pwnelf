@@ -58,6 +58,23 @@ namespace pwnelf{
         std::uint64_t align{0};
     };
 
+    enum class SymbolSource {Symtab, Dynsym};
+    
+    struct Symbol{
+        std::string name;
+        std::uint64_t value{0};
+        std::uint64_t size{0};
+        unsigned char info{0};
+        unsigned char other{0};
+        std::uint16_t shndx{0};
+        SymbolSource source{SymbolSource::Symtab};
+
+        unsigned char type() const noexcept;
+        unsigned char bind() const noexcept;
+        bool is_function() const noexcept;
+        bool is_defined() const noexcept;
+    };
+
     class ElfFile{
         private:
         std::unique_ptr<MappedFile> owned_;
@@ -67,11 +84,14 @@ namespace pwnelf{
         ElfHeader header_;
         std::vector<Section> sections_;
         std::vector<Segment> segment_;
+        std::vector<Symbol> symbols_;
+        bool has_symtab_{false};
 
         ElfFile(std::unique_ptr<MappedFile> owned, ByteView data, std::string origin);
         void parse_header();
         void parse_segments();
         void parse_sections();
+        void parse_symbols();
 
         public:
         static ElfFile load(const std::string& path);
@@ -88,5 +108,11 @@ namespace pwnelf{
         ByteView section_data(const Section& s) const;
         std::optional<std::uint64_t> vaddr_to_offset(std::uint64_t vaddr) const noexcept;
         std::vector<const Segment*> executable_segments() const;
+
+        const std::vector<Symbol>& symbols() const noexcept;
+        bool has_symtab() const noexcept;
+        bool has_symbol(std::string_view name) const noexcept;
+        const Symbol* function_at(std::uint64_t addr) const noexcept;
+        const Symbol* find_function(std::string_view name) const noexcept;
     };
 }

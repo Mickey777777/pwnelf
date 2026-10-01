@@ -78,6 +78,22 @@ namespace pwnelf {
     static_assert(offsetof(Elf64_Shdr, sh_link) == 40, "");
     static_assert(offsetof(Elf64_Shdr, sh_entsize) == 56, "");
 
+    struct Elf64_Sym{
+        Elf64_Word st_name;
+        unsigned char st_info;
+        unsigned char st_other;
+        Elf64_Half st_shndx;
+        Elf64_Addr st_value;
+        Elf64_Xword st_size;
+    };
+
+    static_assert(sizeof(Elf64_Sym) == 24, "Elf64_Sym must be 24 bytes");
+    static_assert(offsetof(Elf64_Sym, st_info) == 4, "");
+    static_assert(offsetof(Elf64_Sym, st_other) == 5, "");
+    static_assert(offsetof(Elf64_Sym, st_shndx) == 6, "");
+    static_assert(offsetof(Elf64_Sym, st_value) == 8, "");
+    static_assert(offsetof(Elf64_Sym, st_size) == 16, "");
+
     // e_ident inner 인덱스
     inline constexpr std::size_t EI_MAG0 = 0;
     inline constexpr std::size_t EI_MAG1 = 1;
@@ -159,6 +175,16 @@ namespace pwnelf {
 
     // 특수 섹션 인덱스
     inline constexpr Elf64_Half SHN_UNDEF = 0;
+
+    // st_info 하위 4비트 — 심볼 종류
+    inline constexpr unsigned char STT_NOTYPE = 0;
+    inline constexpr unsigned char STT_OBJECT = 1;
+    inline constexpr unsigned char STT_FUNC = 2;
+
+    // st_info 상위 4비트 — 바인딩
+    inline constexpr unsigned char STB_LOCAL = 0;
+    inline constexpr unsigned char STB_GLOBAL = 1;
+    inline constexpr unsigned char STB_WEAK = 2;
 
     const char* machine_name(Elf64_Half machine);
 }
